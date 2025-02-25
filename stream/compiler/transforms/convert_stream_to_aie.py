@@ -1,6 +1,6 @@
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import cast
+from typing import Sequence, cast
 
 from xdsl.context import MLContext
 from xdsl.dialects.arith import ConstantOp
@@ -138,6 +138,41 @@ class ObjectFifoManager:
                 current_fifo_depth[op.objFifo_name.root_reference.data] -= 1
 
 
+def canonicalize_transformation(sizes: Sequence[int], strides: Sequence[int]) -> tuple[list[int], list[int]]:
+    """
+    Examples:
+
+        Size 1 can be omitted:
+        [1, 1], [1, 1] -> [], []
+        [4, 1], [1, 1] -> [4], [1]
+        [1, 4], [4, 1] -> [4], [1]
+
+        Squash redundancy:
+        [4, 4], [4, 1] -> [16], [1]
+
+    """
+
+    resulting_strides: list[int] = []
+    resulting_sizes: list[int] = []
+
+    for size, stride in zip(reversed(sizes), reversed(strides)):
+        assert size != 0
+        if size == 1:
+            continue
+        if not resulting_sizes:
+            resulting_sizes.insert(0, size)
+            resulting_strides.insert(0, stride)
+            continue
+        # check for squash
+        if stride == resulting_sizes[0] * resulting_strides[0]:
+            resulting_sizes[0] *= size
+        else:
+            resulting_sizes.insert(0, size)
+            resulting_strides.insert(0, stride)
+
+    return resulting_sizes, resulting_strides
+
+
 @dataclass
 class TransferToObjectFIFOPattern(RewritePattern):
 
@@ -208,13 +243,27 @@ class TransferToObjectFIFOPattern(RewritePattern):
         arg_index = arg_order.index(op.tensor.data[-2])
         arg = runtime_sequence.body.block.args[arg_index]
 
-        static_offsets = cast(tuple[int], op.offsets.get_values()[-4:])
-        static_sizes = cast(tuple[int], op.sizes.get_values()[-4:])
-        static_strides = cast(tuple[int], op.strides.get_values()[-4:])
+        offsets = cast(tuple[int, ...], op.offsets.get_values()[-4:])
+        sizes = cast(tuple[int, ...], op.sizes.get_values()[-4:])
+        strides = cast(tuple[int, ...], op.strides.get_values()[-4:])
+        assert isinstance(arg.type, MemRefType)
+        shapes = tuple(x.data for x in arg.type.shape)[-4:]
 
-        static_offsets = (0,) * (4 - len(static_offsets)) + static_offsets
-        static_sizes = (1,) * (4 - len(static_sizes)) + static_sizes
-        static_strides = (0,) * (4 - len(static_strides)) + static_strides
+        # assume default layout here:
+        static_strides = []
+        current_stride = 1
+        for shape, stride in zip(reversed(shapes), reversed(strides)):
+            static_strides.insert(0, current_stride)
+            current_stride *= shape * stride
+
+        static_sizes = list(sizes)
+
+        # canonicalize transformation
+        static_sizes, static_strides = canonicalize_transformation(static_sizes, static_strides)
+
+        static_offsets = (0,) * (4 - len(offsets)) + offsets
+        static_sizes = (1,) * (4 - len(static_sizes)) + tuple(static_sizes)
+        static_strides = (0,) * (4 - len(static_strides)) + tuple(static_strides)
 
         ids = {"I": 0, "W": 1, "O": 2}
 
