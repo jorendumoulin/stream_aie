@@ -4,9 +4,9 @@ from typing import Sequence, cast
 
 from xdsl.context import MLContext
 from xdsl.dialects.arith import ConstantOp
-from xdsl.dialects.builtin import IntegerAttr, MemRefType, ModuleOp, StringAttr, i32
+from xdsl.dialects.builtin import IntegerAttr, MemRefType, ModuleOp, StringAttr, SymbolRefAttr, i32
 from xdsl.dialects.func import CallOp, FuncOp
-from xdsl.ir import Attribute, Operation, Region, SSAValue
+from xdsl.ir import Attribute, Operation, OpResult, Region, SSAValue
 from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import (
     PatternRewriter,
@@ -22,6 +22,7 @@ from xdsl_aie.dialects.aie import (
     DeviceOp,
     EndOp,
     ObjectFifoAcquireOp,
+    ObjectFifoLinkOp,
     ObjectFifoOp,
     ObjectFifoPortEnum,
     ObjectFIFOReleaseOp,
@@ -101,7 +102,7 @@ class ObjectFifoManager:
         # this will reuse objectfifos of the same source dest, and type.
         of_name = get_of_name(source_tile, dest_tile, transfer.tensor.data[-2])
 
-        object_fifo = ObjectFifoOp(
+        object_fifo = ObjectFifoOp.from_referenced_type(
             elemNumber=IntegerAttr(1, i32),
             producerTile=source_tile,
             consumerTiles=[dest_tile],
@@ -111,7 +112,7 @@ class ObjectFifoManager:
         )
 
         # object fifo should be defined at start of device
-        replaced = SymbolTable.insert_or_update(self.device_op, object_fifo)
+        # replaced = SymbolTable.insert_or_update(self.device_op, object_fifo)
 
         # for now, don't let this add runtime sequence ops, this needs to be done by
         # the transfer transform itself
@@ -380,6 +381,75 @@ class ConvPattern(RewritePattern):
 
 
 @dataclass
+class PassThroughMemTile(RewritePattern):
+
+    changes: dict[str, str]
+    tile_op_manager: TileOpManager
+
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: ObjectFifoOp, rewriter: PatternRewriter):
+
+        # if source is edge:
+        assert isinstance(op.producerTile, OpResult)
+        assert isinstance(op.producerTile.op, TileOp)
+        if op.producerTile.op.col.value.data != 0:
+            return
+
+        # and destination is not memtile
+        if len(op.consumerTiles) != 1:
+            return
+        assert isinstance(consumerTile := op.consumerTiles[0], OpResult)
+        assert isinstance(consumerTile.op, TileOp)
+        if consumerTile.op.col.value.data == 1:
+            return
+
+        memtile = self.tile_op_manager.insert_or_update(0, 1)
+
+        objectfifo_new = ObjectFifoOp(
+            op.producerTile,
+            [memtile],
+            op.elemNumber,
+            op.elemType,
+            op.sym_name,
+            op.dimensionsToStream,
+            op.dimensionsFromStreamPerConsumer,
+            op.disable_synchronization,
+            op.plio,
+            op.via_DMA,
+        )
+
+        objectfifo_mem = ObjectFifoOp(
+            memtile,
+            list(op.consumerTiles),
+            op.elemNumber,
+            op.elemType,
+            op.sym_name.data + "_mem",
+            op.dimensionsToStream,
+            op.dimensionsFromStreamPerConsumer,
+            op.disable_synchronization,
+            op.plio,
+            op.via_DMA,
+        )
+
+        link = ObjectFifoLinkOp([objectfifo_new.sym_name.data], [objectfifo_mem.sym_name.data], [], [])
+
+        rewriter.replace_matched_op([objectfifo_new, objectfifo_mem, link])
+
+        self.changes[op.sym_name.data] = op.sym_name.data + "_mem"
+
+
+@dataclass
+class OfNameRewriter(RewritePattern):
+
+    changes: dict[str, str]
+
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: ObjectFifoAcquireOp | ObjectFIFOReleaseOp, rewriter: PatternRewriter):
+        if op.objFifo_name.root_reference.data in self.changes:
+            op.objFifo_name = SymbolRefAttr(self.changes[op.objFifo_name.root_reference.data])
+
+
+@dataclass
 class InsertRuntimeDMAs(RewritePattern):
 
     sequence_op: RuntimeSequenceOp
@@ -515,6 +585,12 @@ class ConvertStreamToAIEPass(ModulePass):
         # insert dma wait statements for bd collisions
 
         PatternRewriteWalker(ManageSyncs(), apply_recursively=False).rewrite_module(op)
+
+        # pass through memtile to enable transformations
+
+        passthrough = PassThroughMemTile({}, tile_op_manager)
+        PatternRewriteWalker(passthrough, apply_recursively=False).rewrite_module(op)
+        PatternRewriteWalker(OfNameRewriter(passthrough.changes)).rewrite_module(op)
 
         ## cleanup
 
