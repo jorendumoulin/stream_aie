@@ -303,7 +303,6 @@ class TiledWorkloadGenerationStage(Stage):
             for layer_op, tensor in original_node.operand_tensors.items():
                 original_subviews[layer_op] = tensor.subview
 
-
             finer_node = ComputationNode(
                 node_id=original_node_id,
                 sub_id=n,

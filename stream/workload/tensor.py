@@ -1,8 +1,8 @@
 from math import prod
 from typing import TYPE_CHECKING, Sequence
+
 from xdsl.dialects.builtin import MemRefType
 from xdsl.dialects.memref import AllocOp, SubviewOp
-
 from zigzag.datatypes import LayerDim, LayerOperand
 
 if TYPE_CHECKING:
@@ -119,7 +119,7 @@ class SubviewTensor:
     @property
     def source(self) -> SubviewOp | AllocOp:
         return self.subview.source.op
-    
+
     @property
     def original_shape(self) -> list[int]:
         """Get the original shape of the tensor before subviewing."""

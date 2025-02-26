@@ -1,3 +1,4 @@
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from math import prod
@@ -46,7 +47,6 @@ from xdsl_aie.dialects.aiex import (
 )
 
 from stream.compiler.dialects.stream import ComputationNodeOp, EdgeOp, TransferOp
-import re
 
 
 def get_tile(value: str) -> tuple[int, int]:
@@ -273,7 +273,7 @@ class TransferToObjectFIFOPattern(RewritePattern):
         total_offset = 0
         extended_shapes = shapes + (1,)
         for i in range(len(offsets)):
-            total_offset += prod(extended_shapes[i+1:]) * offsets[i]
+            total_offset += prod(extended_shapes[i + 1 :]) * offsets[i]
 
         static_offsets = (0, 0, 0, total_offset)
         static_sizes = (1,) * (4 - len(static_sizes)) + tuple(static_sizes)
@@ -601,15 +601,9 @@ def get_transform(source: TiledStridedLayout, dest: TiledStridedLayout) -> tuple
     sizes_src, strides_src = zip(*[(x["stride_src"].bound, x["stride_src"].step) for x in strides])
     sizes_dest, strides_dest = zip(*[(x["stride_dest"].bound, x["stride_dest"].step) for x in strides])
 
-    print(sizes_src, strides_src)
-    print(sizes_dest, strides_dest)
-
     # canonicalize
     sizes_src, strides_src = canonicalize_transformation(sizes_src, strides_src)
     sizes_dest, strides_dest = canonicalize_transformation(sizes_dest, strides_dest)
-
-    print(sizes_src, strides_src)
-    print(sizes_dest, strides_dest)
 
     # we only consider transformations at the source for now, so no transform should be happening at dest
     if len(sizes_dest) != 1:

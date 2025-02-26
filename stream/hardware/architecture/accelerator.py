@@ -84,7 +84,12 @@ class Accelerator:
         self.memory_manager.add_tensor_to_core(tensor, core, initial_timestep, available_timestep, memory_op)
 
     def remove(
-        self, tensor: SubviewTensor, core: Core, memory_op: MemoryOperand, timestep: int, write_back_to_offchip: bool = False
+        self,
+        tensor: SubviewTensor,
+        core: Core,
+        memory_op: MemoryOperand,
+        timestep: int,
+        write_back_to_offchip: bool = False,
     ):
         """Remove tensor from core. If required, transfer to offchip before removal.
 

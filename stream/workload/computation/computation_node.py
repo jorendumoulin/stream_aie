@@ -1,10 +1,8 @@
 from copy import deepcopy
-from math import prod
 from typing import TypeAlias
+
 from xdsl.dialects.builtin import MemRefType, i8, i16, i32
 from xdsl.dialects.memref import AllocOp, SubviewOp
-from enum import IntEnum
-
 from zigzag.datatypes import Constants, LayerDim, LayerOperand, MemoryOperand
 from zigzag.utils import hash_sha512
 from zigzag.visualization.results.plot_cme import shorten_onnx_layer_name
@@ -26,6 +24,7 @@ PRECISION_TYPE_MAP = {
     16: i16,
     32: i32,
 }
+
 
 class ComputationNode(LayerNode, Node):
     """Extension of ZigZag's concept of a "LayerNode" into a more general concept
@@ -323,4 +322,3 @@ class ComputationNode(LayerNode, Node):
     def nb_real_predecessors(self, nb_real_predecessors: int | None):
         self.__nb_real_predecessors = nb_real_predecessors
         self._static_hash_value = self.__compute_static_hash()
-

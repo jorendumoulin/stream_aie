@@ -1,12 +1,12 @@
 from typing import cast
+
+from snaxc.dialects.tsl import TiledStridedLayoutAttr
 from xdsl.context import Context
 from xdsl.dialects import builtin, func
 from xdsl.ir import Attribute, BlockArgument
 from xdsl.passes import ModulePass
-from xdsl.utils.hints import isa
-
-from snaxc.dialects.tsl import TiledStridedLayoutAttr
 from xdsl_aie.dialects.aie import ObjectFIFO, ObjectFIFOSubview
+
 
 class ClearMemorySpace(ModulePass):
     name = "clear-memory-space"
@@ -61,10 +61,7 @@ class ClearMemorySpace(ModulePass):
 
                 # change block args ssa values
                 if op_in_module.body.blocks:
-                    old_args = [
-                        old_arg
-                        for old_arg in op_in_module.body.block._args  # pyright: ignore
-                    ]
+                    old_args = [old_arg for old_arg in op_in_module.body.block._args]  # pyright: ignore
                     new_args = [
                         BlockArgument(
                             clear_memory_space(old_arg.type),

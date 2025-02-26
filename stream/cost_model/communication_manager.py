@@ -50,7 +50,17 @@ class CommunicationLinkEvent:
             * the bits per clock cycle used of the link bandwidth
     """
 
-    def __init__(self, type: str, start: int, end: int, tensors: list[SubviewTensor], energy: float, activity: float, source: Core, destinations: list[Core]) -> None:
+    def __init__(
+        self,
+        type: str,
+        start: int,
+        end: int,
+        tensors: list[SubviewTensor],
+        energy: float,
+        activity: float,
+        source: Core,
+        destinations: list[Core],
+    ) -> None:
         self.type = type
         self.start = start
         self.end = end
@@ -249,7 +259,9 @@ class CommunicationManager:
         # Block them
         for link, req_bw in links_to_block.items():
             req_bw = ceil(req_bw)
-            link.block(block_start, duration, tensors_per_link[link], activity=req_bw, source=source, destinations=destinations)
+            link.block(
+                block_start, duration, tensors_per_link[link], activity=req_bw, source=source, destinations=destinations
+            )
         return block_start
 
     def get_links_idle_window(
