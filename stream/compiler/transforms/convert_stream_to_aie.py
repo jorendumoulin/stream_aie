@@ -112,10 +112,7 @@ class ObjectFifoManager:
         )
 
         # object fifo should be defined at start of device
-        # replaced = SymbolTable.insert_or_update(self.device_op, object_fifo)
-
-        # for now, don't let this add runtime sequence ops, this needs to be done by
-        # the transfer transform itself
+        SymbolTable.insert_or_update(self.device_op, object_fifo)
 
         return object_fifo
 
