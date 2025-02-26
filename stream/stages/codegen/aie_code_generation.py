@@ -13,7 +13,7 @@ from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.computation.computation_node import ComputationNode
-from stream.workload.tensor import Tensor
+from stream.workload.tensor import SubviewTensor
 
 
 class AIECodeGenerationStage(Stage):
@@ -52,16 +52,11 @@ class AIECodeGenerationStage(Stage):
                 tensor = node.operand_tensors[operand]
 
                 if tensor.layer_operand == Constants.OUTPUT_LAYER_OP:
-                    precision = tensor.origin.operand_precision[Constants.FINAL_OUTPUT_LAYER_OP]
+                    precision = tensor.cn_source.operand_precision[Constants.FINAL_OUTPUT_LAYER_OP]
                 else:
-                    precision = tensor.origin.operand_precision[tensor.layer_operand]
+                    precision = tensor.cn_source.operand_precision[tensor.layer_operand]
 
-                if key not in edges_ranges:
-                    edges_ranges[key] = (precision, [x[1] for x in tensor.loop_ranges])
-
-                else:
-                    for i in range(len(edges_ranges[key][1])):
-                        edges_ranges[key][1][i] = max(edges_ranges[key][1][i], tensor.loop_ranges[i][1])
+                edges_ranges[key] = (precision, tensor.original_shape)
 
         edge_ops = {
             key: EdgeOp(MemRefType(IntegerType(precision), loop_ranges), str(key))
@@ -109,7 +104,7 @@ class AIECodeGenerationStage(Stage):
         transfer_list.sort(key=lambda x: x[0].start)
 
         # transfers are unique per Layer Operand and Steady state stuff
-        transfers: dict[Tensor, list[tuple[CommunicationLinkEvent, TransferOp]]] = defaultdict(list)
+        transfers: dict[SubviewTensor, list[tuple[CommunicationLinkEvent, TransferOp]]] = defaultdict(list)
         transfer_ops: list[TransferOp] = []
 
         for transfer, link in transfer_list:
@@ -118,15 +113,15 @@ class AIECodeGenerationStage(Stage):
 
             edge = edge_ops[(tensor.id[0], tensor.id[2])]
 
-            # TODO: why is this backwards?
-            dest = str(link.sender)
-            source = str(link.receiver)
+            # Get source and dest and convert to string for TransferOp creation which uses string
+            source = str(transfer.source)
+            dest = str(transfer.destinations[0])  # TODO: Support broadcasting to multiple destinations
 
             # size = cast(int, tensor.origin.operand_size_elem[tensor.layer_operand])
             if tensor.layer_operand == Constants.OUTPUT_LAYER_OP:
-                precision = tensor.origin.operand_precision[Constants.FINAL_OUTPUT_LAYER_OP]
+                precision = tensor.cn_source.operand_precision[Constants.FINAL_OUTPUT_LAYER_OP]
             else:
-                precision = tensor.origin.operand_precision[tensor.layer_operand]
+                precision = tensor.cn_source.operand_precision[tensor.layer_operand]
 
             offsets = [x[0] for x in tensor.loop_ranges]
             sizes = [x[1] - x[0] for x in tensor.loop_ranges]
@@ -249,11 +244,11 @@ class AIECodeGenerationStage(Stage):
                 dest = str(link.sender)
                 source = str(link.receiver)
 
-                size = cast(int, tensor.origin.operand_size_elem[tensor.layer_operand])
+                size = cast(int, tensor.cn_source.operand_size_elem[tensor.layer_operand])
                 if tensor.layer_operand == Constants.OUTPUT_LAYER_OP:
-                    precision = tensor.origin.operand_precision[Constants.FINAL_OUTPUT_LAYER_OP]
+                    precision = tensor.cn_source.operand_precision[Constants.FINAL_OUTPUT_LAYER_OP]
                 else:
-                    precision = tensor.origin.operand_precision[tensor.layer_operand]
+                    precision = tensor.cn_source.operand_precision[tensor.layer_operand]
 
                 result_type = MemRefType(IntegerType(precision), [size])
 

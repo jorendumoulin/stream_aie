@@ -1,5 +1,6 @@
 from collections import defaultdict
 from dataclasses import dataclass, field
+from math import prod
 from typing import Sequence, cast
 
 from xdsl.context import MLContext
@@ -37,14 +38,15 @@ from xdsl_aie.dialects.aiex import (
 )
 
 from stream.compiler.dialects.stream import ComputationNodeOp, EdgeOp, TransferOp
+import re
 
 
 def get_tile(value: str) -> tuple[int, int]:
-    if value == "Any":
-        return (0, 0)
-    elif value == "Core(0)":
-        return (0, 2)
-    raise ValueError("unknown tile")
+    match = re.match(r"Core\((\d+)\)", value)
+    if match:
+        return 0, int(match.group(1))
+    else:
+        raise ValueError(f"Invalid tile value: {value}")
 
 
 def get_of_name(source: TileOp, dest: TileOp, operand: str) -> str:
@@ -185,10 +187,10 @@ class TransferToObjectFIFOPattern(RewritePattern):
         of_name = of.sym_name.data
 
         # decide whether to consume or produce
-        if op.source.data == "Any":
-            port = ObjectFifoPortEnum.Consume
-        else:
+        if str(op.parent_op().tile.op.row.value.data) in op.source.data:
             port = ObjectFifoPortEnum.Produce
+        else:
+            port = ObjectFifoPortEnum.Consume
 
         assert isinstance(memref_type := op.results[0].type, MemRefType)
 
@@ -259,7 +261,13 @@ class TransferToObjectFIFOPattern(RewritePattern):
         # canonicalize transformation
         static_sizes, static_strides = canonicalize_transformation(static_sizes, static_strides)
 
-        static_offsets = (0,) * (4 - len(offsets)) + offsets
+        # Hacky stuff to convert the offset per dimimension into the last entry
+        total_offset = 0
+        extended_shapes = shapes + (1,)
+        for i in range(len(offsets)):
+            total_offset += prod(extended_shapes[i+1:]) * offsets[i]
+
+        static_offsets = (0, 0, 0, total_offset)
         static_sizes = (1,) * (4 - len(static_sizes)) + tuple(static_sizes)
         static_strides = (0,) * (4 - len(static_strides)) + tuple(static_strides)
 
