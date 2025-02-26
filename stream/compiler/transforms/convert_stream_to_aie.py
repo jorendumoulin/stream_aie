@@ -3,6 +3,9 @@ from dataclasses import dataclass, field
 from math import prod
 from typing import Sequence, cast
 
+from snaxc.dialects.snax import LayoutCast
+from snaxc.dialects.tsl import TiledStridedLayoutAttr
+from snaxc.ir.tsl import Stride, TiledStride, TiledStridedLayout
 from xdsl.context import MLContext
 from xdsl.dialects.arith import ConstantOp
 from xdsl.dialects.builtin import IntegerAttr, MemRefType, ModuleOp, StringAttr, SymbolRefAttr, i32
@@ -18,15 +21,20 @@ from xdsl.pattern_rewriter import (
 from xdsl.rewriter import InsertPoint, Rewriter
 from xdsl_aie.dialects.aie import (
     AIEDeviceEnum,
+    BDDimLayout,
+    BDDimLayoutArray,
+    BDDimLayoutArrayAttr,
     Block,
     CoreOp,
     DeviceOp,
     EndOp,
+    ObjectFIFO,
     ObjectFifoAcquireOp,
     ObjectFifoLinkOp,
     ObjectFifoOp,
     ObjectFifoPortEnum,
     ObjectFIFOReleaseOp,
+    ObjectFIFOSubview,
     ObjectFIFOSubviewAccessOp,
     SymbolTable,
     TileOp,
@@ -394,7 +402,7 @@ class PassThroughMemTile(RewritePattern):
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: ObjectFifoOp, rewriter: PatternRewriter):
 
-        # if source is edge:
+        # if source is shim:
         assert isinstance(op.producerTile, OpResult)
         assert isinstance(op.producerTile.op, TileOp)
         if op.producerTile.op.col.value.data != 0:
@@ -527,6 +535,142 @@ class ManageSyncs(RewritePattern):
             rewriter.insert_op(DmaWaitOp(symbol), InsertPoint.at_end(op.body.block))
 
 
+@dataclass
+class SetKernelLayouts(RewritePattern):
+
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: CallOp, rewriter: PatternRewriter):
+
+        # handle the conv case
+        if op.callee.root_reference.data == "conv2dk1_i8":
+
+            input = op.arguments[0]
+            output = op.arguments[2]
+            input_type = cast(MemRefType[Attribute], op.arguments[0].type)
+
+            if isinstance(input_type.layout, TiledStridedLayoutAttr):
+                return
+
+            input_layout = TiledStridedLayout(
+                [
+                    TiledStride([Stride(32 * 64, 1)]),  # N
+                    TiledStride([Stride(32 * 64, 1)]),  # G
+                    TiledStride([Stride(32 * 64, 1)]),  # H
+                    TiledStride([Stride(8, 32)]),  # W
+                    TiledStride([Stride(8 * 32, 8), Stride(1, 8)]),  # C
+                ]
+            )
+
+            input_type = MemRefType(
+                input_type.element_type, input_type.shape, TiledStridedLayoutAttr(input_layout), input_type.memory_space
+            )
+
+            new_input = LayoutCast(input, input_type)
+            new_output = LayoutCast(output, input_type)
+
+            rewriter.insert_op([new_input, new_output], InsertPoint.before(op))
+
+            op.operands[0] = new_input.results[0]
+            op.operands[2] = new_output.results[0]
+
+
+def get_transform(source: TiledStridedLayout, dest: TiledStridedLayout) -> tuple[list[int], list[int]]:
+    """
+    Returns sizes, strides
+    """
+
+    # list of dim, depth
+    keys: list[tuple[int, int]] = []
+
+    for dim in range(source.dimension()):
+        for depth in range(source.tstrides[dim].depth()):
+            keys.append((dim, depth))
+
+    strides: list[dict[str, Stride]] = []
+
+    for key in keys:
+        strides.append(
+            {
+                "stride_src": source.get_stride(*key),
+                "stride_dest": dest.get_stride(*key),
+            }
+        )
+
+    strides.sort(key=lambda x: x["stride_dest"].step or 0, reverse=True)
+
+    sizes_src, strides_src = zip(*[(x["stride_src"].bound, x["stride_src"].step) for x in strides])
+    sizes_dest, strides_dest = zip(*[(x["stride_dest"].bound, x["stride_dest"].step) for x in strides])
+
+    print(sizes_src, strides_src)
+    print(sizes_dest, strides_dest)
+
+    # canonicalize
+    sizes_src, strides_src = canonicalize_transformation(sizes_src, strides_src)
+    sizes_dest, strides_dest = canonicalize_transformation(sizes_dest, strides_dest)
+
+    print(sizes_src, strides_src)
+    print(sizes_dest, strides_dest)
+
+    # we only consider transformations at the source for now, so no transform should be happening at dest
+    if len(sizes_dest) != 1:
+        raise RuntimeError("did not expect dest transformation")
+
+    return (sizes_src, strides_src)
+
+
+@dataclass
+class RealizeLayoutCats(RewritePattern):
+
+    of_manager: ObjectFifoManager
+
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: LayoutCast, rewriter: PatternRewriter):
+
+        # gather some variables
+        assert isinstance(op.source, OpResult)
+        assert isinstance(subview_access := op.source.op, ObjectFIFOSubviewAccessOp)
+        assert isinstance(subview_access.subview, OpResult)
+        assert isinstance(of_acquire := subview_access.subview.op, ObjectFifoAcquireOp)
+
+        dest_type = cast(MemRefType[Attribute], op.dest.type)
+
+        # get the objectfifo
+        of = self.of_manager.of_from_name(of_acquire.objFifo_name.root_reference.data)
+
+        # get the element_type
+        element_type = cast(MemRefType[Attribute], of.elemType.buffer)
+
+        of_layout = element_type.layout
+
+        if of_layout == dest_type.layout:
+            # transform has already been applied to ObjectFIFO
+            of_acquire.results[0].type = ObjectFIFOSubview([dest_type])
+            subview_access.results[0].type = dest_type
+            assert op.source.type == op.dest.type
+            op.dest.replace_by(op.source)
+            rewriter.erase_matched_op()
+            return
+
+        tsl_dest = cast(TiledStridedLayoutAttr, dest_type.layout).data
+        strides = [1]
+        for size in reversed(element_type.shape.data[1:]):
+            strides = [size.data * strides[0]] + strides
+        tile_bounds = tsl_dest.tile_bounds()
+        tsl_source = TiledStridedLayout.from_strides(strides, tile_bounds)  # pyright: ignore
+
+        # calculate transform (TODO)
+        # set dimensionsToStream
+        sizes, strides = get_transform(tsl_source, cast(TiledStridedLayoutAttr, dest_type.layout).data)
+        # create BDDimlayout
+        bd_layout = BDDimLayoutArrayAttr(
+            BDDimLayoutArray([BDDimLayout((size, stride)) for size, stride in zip(sizes, strides)])
+        )
+        of.dimensionsToStream = bd_layout
+
+        # set of_layout to the memref layout
+        of.elemType = ObjectFIFO([dest_type])
+
+
 class ConvertStreamToAIEPass(ModulePass):
     name = "convert-stream-to-aie"
 
@@ -596,6 +740,10 @@ class ConvertStreamToAIEPass(ModulePass):
         passthrough = PassThroughMemTile({}, tile_op_manager)
         PatternRewriteWalker(passthrough, apply_recursively=False).rewrite_module(op)
         PatternRewriteWalker(OfNameRewriter(passthrough.changes)).rewrite_module(op)
+
+        # handle layouts
+        PatternRewriteWalker(SetKernelLayouts()).rewrite_module(op)
+        PatternRewriteWalker(RealizeLayoutCats(object_fifo_manager)).rewrite_module(op)
 
         ## cleanup
 

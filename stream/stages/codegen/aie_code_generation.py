@@ -1,12 +1,14 @@
 from collections import defaultdict
 from typing import Any, cast
 
+from snaxc.dialects.tsl import TSL
 from xdsl.context import MLContext
 from xdsl.dialects.builtin import IndexType, IntegerAttr, IntegerType, MemRefType, ModuleOp
 from xdsl.printer import Printer
 from zigzag.datatypes import Constants, LayerOperand
 
 from stream.compiler.dialects.stream import ComputationNodeOp, EdgeOp, EmptySSAValue, Stream, TransferOp
+from stream.compiler.transforms.clear_memory_space import ClearMemorySpace
 from stream.compiler.transforms.convert_stream_to_aie import ConvertStreamToAIEPass
 from stream.cost_model.communication_manager import CommunicationLinkEvent
 from stream.cost_model.cost_model import StreamCostModelEvaluation
@@ -29,6 +31,7 @@ class AIECodeGenerationStage(Stage):
 
         # add custom dialects and passes
         self.context.load_dialect(Stream)
+        self.context.load_dialect(TSL)
 
         self.output_path: str = kwargs["codegen_path"]
 
@@ -284,6 +287,9 @@ class AIECodeGenerationStage(Stage):
 
         # Convert to AIE
         ConvertStreamToAIEPass().apply(self.context, module)
+
+        # Remove custom layout attributes
+        ClearMemorySpace().apply(self.context, module)
 
         # print output to codegen path
         file = open(self.output_path, "w")
