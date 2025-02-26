@@ -4,6 +4,7 @@ import onnx.helper as helper
 import onnx.shape_inference
 from onnx import TensorProto
 
+
 def make_gemm(M, N, K):
     ACT_SIZE = 16
     WEIGHT_SIZE = 16
@@ -62,6 +63,7 @@ def make_gemm(M, N, K):
     print(f"{name} exported to {save_path}.")
 
     return save_path
+
 
 if __name__ == "__main__":
     # Example usage
