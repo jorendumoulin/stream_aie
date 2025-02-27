@@ -819,7 +819,6 @@ class ConvertStreamToAIEPass(ModulePass):
 
         # handle layouts
         PatternRewriteWalker(SetKernelLayouts()).rewrite_module(op)
-        breakpoint()
         PatternRewriteWalker(RealizeLayoutCats(object_fifo_manager)).rewrite_module(op)
 
         ## cleanup
