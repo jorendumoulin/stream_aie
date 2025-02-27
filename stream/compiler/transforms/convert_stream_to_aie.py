@@ -593,6 +593,59 @@ class SetKernelLayouts(RewritePattern):
             op.operands[0] = new_input.results[0]
             op.operands[2] = new_output.results[0]
 
+        if op.callee.root_reference.data == "mm_32x32x32":
+
+            A_operand = op.operands[0]
+            A_type = cast(MemRefType[Attribute], op.arguments[0].type)
+            if isinstance(A_type.layout, TiledStridedLayoutAttr):
+                return
+            layout_A = TiledStridedLayout(
+                [
+                    TiledStride([Stride(16 * 32 // 4, 32 // 4), Stride(4, 4)]),
+                    TiledStride([Stride(16, 32 // 4), Stride(1, 4)]),
+                ]
+            )
+            A_type_new = MemRefType(
+                A_type.element_type, A_type.shape, TiledStridedLayoutAttr(layout_A), A_type.memory_space
+            )
+            A_new = LayoutCast(A_operand, A_type_new)
+
+            B_operand = op.operands[1]
+            B_type = cast(MemRefType[Attribute], op.arguments[1].type)
+            if isinstance(B_type.layout, TiledStridedLayoutAttr):
+                return
+            layout_B = TiledStridedLayout(
+                [
+                    TiledStride([Stride(16 * 32 // 4, 32 // 4), Stride(4, 4)]),
+                    TiledStride([Stride(16, 32 // 4), Stride(1, 4)]),
+                ]
+            )
+            B_type_new = MemRefType(
+                B_type.element_type, B_type.shape, TiledStridedLayoutAttr(layout_B), B_type.memory_space
+            )
+            B_new = LayoutCast(B_operand, B_type_new)
+
+            D_operand = op.operands[2]
+            D_type = cast(MemRefType[Attribute], op.arguments[2].type)
+            if isinstance(D_type.layout, TiledStridedLayoutAttr):
+                return
+            layout_D = TiledStridedLayout(
+                [
+                    TiledStride([Stride(16 * 32 // 4, 32 // 4), Stride(4, 4)]),
+                    TiledStride([Stride(16, 32 // 4), Stride(1, 4)]),
+                ]
+            )
+            D_type_new = MemRefType(
+                D_type.element_type, D_type.shape, TiledStridedLayoutAttr(layout_D), D_type.memory_space
+            )
+            D_new = LayoutCast(D_operand, D_type_new)
+
+            rewriter.insert_op((A_new, B_new, D_new), InsertPoint.before(op))
+
+            op.operands[0] = A_new.results[0]
+            op.operands[1] = B_new.results[0]
+            op.operands[2] = D_new.results[0]
+
 
 def get_transform(source: TiledStridedLayout, dest: TiledStridedLayout) -> tuple[list[int], list[int]]:
     """
@@ -766,6 +819,7 @@ class ConvertStreamToAIEPass(ModulePass):
 
         # handle layouts
         PatternRewriteWalker(SetKernelLayouts()).rewrite_module(op)
+        breakpoint()
         PatternRewriteWalker(RealizeLayoutCats(object_fifo_manager)).rewrite_module(op)
 
         ## cleanup
