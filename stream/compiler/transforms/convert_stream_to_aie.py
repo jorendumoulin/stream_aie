@@ -650,11 +650,20 @@ class RealizeLayoutCats(RewritePattern):
         for size in reversed(element_type.shape.data[1:]):
             strides = [size.data * strides[0]] + strides
         tile_bounds = tsl_dest.tile_bounds()
-        tsl_source = TiledStridedLayout.from_strides(strides, tile_bounds)  # pyright: ignore
 
-        # calculate transform (TODO)
-        # set dimensionsToStream
-        sizes, strides = get_transform(tsl_source, cast(TiledStridedLayoutAttr, dest_type.layout).data)
+        tsl_in = TiledStridedLayout.from_strides(strides, tile_bounds)  # pyright: ignore
+        tsl_out = cast(TiledStridedLayoutAttr, dest_type.layout).data
+
+        # calculate transform
+
+        # check if producer on consumer
+        port = ObjectFifoPortEnum.from_int(of_acquire.port.value.data)
+
+        if port == ObjectFifoPortEnum.Consume:
+            sizes, strides = get_transform(tsl_in, tsl_out)
+        else:  # Produce
+            sizes, strides = get_transform(tsl_out, tsl_in)
+
         # create BDDimlayout
         bd_layout = BDDimLayoutArrayAttr(
             BDDimLayoutArray([BDDimLayout((size, stride)) for size, stride in zip(sizes, strides)])
