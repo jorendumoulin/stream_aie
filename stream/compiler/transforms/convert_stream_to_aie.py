@@ -402,28 +402,48 @@ class PassThroughMemTile(RewritePattern):
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: ObjectFifoOp, rewriter: PatternRewriter):
 
-        # if source is shim:
-        assert isinstance(op.producerTile, OpResult)
-        assert isinstance(op.producerTile.op, TileOp)
-        if op.producerTile.op.col.value.data != 0:
-            return
-
-        # and destination is not memtile
+        # not supporting any broadcast yet
         if len(op.consumerTiles) != 1:
             return
+
+        # if connects to shim:
+        assert isinstance(producerTile := op.producerTile, OpResult)
+        assert isinstance(producerTile.op, TileOp)
         assert isinstance(consumerTile := op.consumerTiles[0], OpResult)
         assert isinstance(consumerTile.op, TileOp)
-        if consumerTile.op.col.value.data == 1:
+
+        # source/dest must be shim
+        if producerTile.op.row.value.data == 0:
+            shim = producerTile
+            compute = consumerTile
+            shim_is_producer = True
+        elif consumerTile.op.row.value.data == 0:
+            shim = consumerTile
+            compute = producerTile
+            shim_is_producer = False
+        else:
+            return
+
+        # other one must be compute tile
+        assert isinstance(compute.op, TileOp)
+        if compute.op.row.value.data < 2:
             return
 
         memtile = self.tile_op_manager.insert_or_update(0, 1)
 
-        objectfifo_new = ObjectFifoOp(
+        if shim_is_producer:
+            producer_name = op.sym_name.data
+            consumer_name = op.sym_name.data + "_mem"
+        else:
+            consumer_name = op.sym_name.data
+            producer_name = op.sym_name.data + "_mem"
+
+        objectfifo_producer = ObjectFifoOp(
             op.producerTile,
             [memtile],
             op.elemNumber,
             op.elemType,
-            op.sym_name,
+            producer_name,
             op.dimensionsToStream,
             op.dimensionsFromStreamPerConsumer,
             op.disable_synchronization,
@@ -431,12 +451,12 @@ class PassThroughMemTile(RewritePattern):
             op.via_DMA,
         )
 
-        objectfifo_mem = ObjectFifoOp(
+        objectfifo_consumer = ObjectFifoOp(
             memtile,
             list(op.consumerTiles),
             op.elemNumber,
             op.elemType,
-            op.sym_name.data + "_mem",
+            consumer_name,
             op.dimensionsToStream,
             op.dimensionsFromStreamPerConsumer,
             op.disable_synchronization,
@@ -444,9 +464,9 @@ class PassThroughMemTile(RewritePattern):
             op.via_DMA,
         )
 
-        link = ObjectFifoLinkOp([objectfifo_new.sym_name.data], [objectfifo_mem.sym_name.data], [], [])
+        link = ObjectFifoLinkOp([producer_name], [consumer_name], [], [])
 
-        rewriter.replace_matched_op([objectfifo_new, objectfifo_mem, link])
+        rewriter.replace_matched_op([objectfifo_producer, objectfifo_consumer, link])
 
         self.changes[op.sym_name.data] = op.sym_name.data + "_mem"
 
