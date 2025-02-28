@@ -158,7 +158,9 @@ class ObjectFifoManager:
                     of.elemNumber = IntegerAttr.from_int_and_width(current_fifo_depth[of_name], 32)
 
             elif isinstance(op, ObjectFIFOReleaseOp):
-                current_fifo_depth[op.objFifo_name.root_reference.data] -= 1
+                of_name = op.objFifo_name.root_reference.data
+                current_fifo_depth[of_name] -= 1
+                op.size = IntegerAttr.from_int_and_width(current_fifo_depth[of_name] + 1, 32)
 
 
 def canonicalize_transformation(sizes: Sequence[int], strides: Sequence[int]) -> tuple[list[int], list[int]]:
