@@ -133,15 +133,30 @@ class ObjectFifoManager:
 
     def update_depths(self):
 
-        current_fifo_depth: dict[str, int] = defaultdict(lambda: 0)
+        current_fifo_depth: dict[str, int] = defaultdict(int)
 
         for op in self.device_op.region.block.walk():
+
             if isinstance(op, ObjectFifoAcquireOp):
                 of_name = op.objFifo_name.root_reference.data
+
+                # update acquire size
+                op.size = IntegerAttr.from_int_and_width(current_fifo_depth[of_name] + 1, 32)
+
+                # update access index for all accesses based on this acquire
+                for subview_access in [
+                    x.operation for x in op.result.uses if isinstance(x.operation, ObjectFIFOSubviewAccessOp)
+                ]:
+                    subview_access.index = IntegerAttr.from_int_and_width(current_fifo_depth[of_name], 32)
+
+                # increase current_depth
                 current_fifo_depth[of_name] += 1
+
+                # increase the depth of objectfifo if it does not suffice
                 of = self.of_from_name(of_name)
                 if of.elemNumber.value.data < current_fifo_depth[of_name]:
                     of.elemNumber = IntegerAttr.from_int_and_width(current_fifo_depth[of_name], 32)
+
             elif isinstance(op, ObjectFIFOReleaseOp):
                 current_fifo_depth[op.objFifo_name.root_reference.data] -= 1
 
@@ -182,6 +197,22 @@ def canonicalize_transformation(sizes: Sequence[int], strides: Sequence[int]) ->
 
 
 @dataclass
+class PutTransfersBeforeFirstUse(RewritePattern):
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: TransferOp, rewriter: PatternRewriter):
+
+        assert op.parent
+        operation_uses = set(x.operation for x in op.results[0].uses)
+        first_use_op: Operation = next(o for o in op.parent.walk() if o in operation_uses)
+        while op.parent_op() is not first_use_op.parent_op():
+            assert (parent := first_use_op.parent_op()) is not None
+            first_use_op = parent
+
+        op.detach()
+        rewriter.insert_op(op, InsertPoint.before(first_use_op))
+
+
+@dataclass
 class TransferToObjectFIFOPattern(RewritePattern):
 
     object_fifo_manager: ObjectFifoManager
@@ -195,7 +226,12 @@ class TransferToObjectFIFOPattern(RewritePattern):
         of_name = of.sym_name.data
 
         # decide whether to consume or produce
-        if str(op.parent_op().tile.op.row.value.data) in op.source.data:
+        core_op = op.parent_op()
+        assert isinstance(core_op, CoreOp)
+        assert isinstance(core_op.tile, OpResult)
+        tile = core_op.tile.op
+        assert isinstance(tile, TileOp)
+        if str(tile.row.value.data) in op.source.data:
             port = ObjectFifoPortEnum.Produce
         else:
             port = ObjectFifoPortEnum.Consume
@@ -797,6 +833,10 @@ class ConvertStreamToAIEPass(ModulePass):
         tile_op_manager = TileOpManager(device_op)
         object_fifo_manager = ObjectFifoManager(tile_op_manager, runtime_sequence, device_op)
 
+        # Order all transfers based on first use
+        PatternRewriteWalker(PutTransfersBeforeFirstUse(), apply_recursively=False).rewrite_module(op)
+
+        # Convert transfers to object fifo patterns
         PatternRewriteWalker(
             TransferToObjectFIFOPattern(object_fifo_manager),
             apply_recursively=False,
