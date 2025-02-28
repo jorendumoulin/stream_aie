@@ -747,7 +747,15 @@ class RealizeLayoutCats(RewritePattern):
         dest_type = cast(MemRefType[Attribute], op.dest.type)
 
         # get the objectfifo
-        of = self.of_manager.of_from_name(of_acquire.objFifo_name.root_reference.data)
+        # check if producer or consumer
+        port = ObjectFifoPortEnum.from_int(of_acquire.port.value.data)
+
+        if port == ObjectFifoPortEnum.Consume:
+            # for consume, take objectfifo (mem -> compute)
+            of = self.of_manager.of_from_name(of_acquire.objFifo_name.root_reference.data)
+        else:
+            # for produce, take objectfifo (mem -> shim) (name without '_mem')
+            of = self.of_manager.of_from_name(of_acquire.objFifo_name.root_reference.data[:-4])
 
         # get the element_type
         element_type = cast(MemRefType[Attribute], of.elemType.buffer)
@@ -775,8 +783,6 @@ class RealizeLayoutCats(RewritePattern):
         # calculate transform
 
         # check if producer on consumer
-        port = ObjectFifoPortEnum.from_int(of_acquire.port.value.data)
-
         if port == ObjectFifoPortEnum.Consume:
             sizes, strides = get_transform(tsl_in, tsl_out)
         else:  # Produce
